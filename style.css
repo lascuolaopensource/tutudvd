@@ -1,0 +1,132 @@
+/* ── Reset & base ────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #111;
+  color: #ddd;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── Canvas wrapper ──────────────────────────────────────────────────── */
+#canvas-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #0a0a0a;
+}
+
+canvas#screen {
+  display: block;
+  /* no size set here – JS manages it */
+}
+
+/* ── Control bar (bottom) ────────────────────────────────────────────── */
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 12px;
+  background: #1a1a1a;
+  border-top: 1px solid #333;
+  flex-shrink: 0;
+}
+
+#controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+#controls input[type="text"],
+#controls input[type="number"],
+#controls select {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #eee;
+  border-radius: 4px;
+  padding: 2px 5px;
+  width: 80px;
+}
+
+#controls input[type="text"].wide { width: 110px; }
+
+button {
+  background: #2e2e2e;
+  border: 1px solid #555;
+  color: #ddd;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+button:hover  { background: #3a3a3a; }
+button:active { background: #444; }
+button.primary { background: #1a5a8a; border-color: #2a7ab8; color: #fff; }
+button.primary:hover { background: #2070aa; }
+button.danger  { background: #6a1a1a; border-color: #a83030; color: #fcc; }
+
+/* ── Debug overlay ───────────────────────────────────────────────────── */
+#debug {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  background: rgba(0,0,0,0.65);
+  border: 1px solid #444;
+  border-radius: 5px;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-family: monospace;
+  line-height: 1.6;
+  pointer-events: none;
+  z-index: 10;
+}
+#debug.hidden { display: none; }
+
+/* ── Export progress bar ─────────────────────────────────────────────── */
+#progress-wrap {
+  display: none;
+  position: fixed;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 360px;
+  background: rgba(0,0,0,0.8);
+  border: 1px solid #555;
+  border-radius: 6px;
+  padding: 10px 14px;
+  z-index: 20;
+}
+#progress-wrap.active { display: block; }
+#progress-label { font-size: 12px; margin-bottom: 5px; }
+#progress-bar-track {
+  width: 100%;
+  height: 10px;
+  background: #333;
+  border-radius: 5px;
+  overflow: hidden;
+}
+#progress-bar-fill {
+  height: 100%;
+  background: #2a90d0;
+  border-radius: 5px;
+  width: 0%;
+  transition: width 0.1s;
+}
+
+/* ── Divider ─────────────────────────────────────────────────────────── */
+.sep {
+  width: 1px;
+  height: 22px;
+  background: #444;
+  flex-shrink: 0;
+}
