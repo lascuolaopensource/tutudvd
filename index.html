@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TutuDVD – Old-TV Screensaver</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Savate:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Canvas ---------------------------------------------------------- -->
+  <div id="canvas-wrap">
+    <canvas id="screen"></canvas>
+  </div>
+
+  <!-- Debug overlay --------------------------------------------------- -->
+  <div id="debug" class="hidden">
+    <div>Bounce: <span id="dbg-bounces">0</span></div>
+    <div>Index:  <span id="dbg-index">0</span></div>
+    <div>Text:   <span id="dbg-text">–</span></div>
+    <div>Pos:    <span id="dbg-pos">–</span></div>
+    <div>Vel:    <span id="dbg-vel">–</span></div>
+  </div>
+
+  <!-- Export progress ------------------------------------------------- -->
+  <div id="progress-wrap">
+    <div id="progress-label">Exporting… 0 / 0 frames</div>
+    <div id="progress-bar-track">
+      <div id="progress-bar-fill"></div>
+    </div>
+  </div>
+
+  <!-- Controls -------------------------------------------------------- -->
+  <div id="controls">
+
+    <!-- File loader -->
+    <button id="btn-load" title="Load a JSON or CSV text list">📂 Load texts</button>
+    <input type="file" id="file-input" accept=".json,.csv,.txt" style="display:none" />
+
+    <div class="sep"></div>
+
+    <!-- Seed -->
+    <label>Seed
+      <input type="text" id="inp-seed" value="tutudvd" class="wide" title="Deterministic seed (string or number)" />
+    </label>
+
+    <!-- Speed -->
+    <label>Speed
+      <input type="number" id="inp-speed" value="180" min="10" max="2000" step="10" title="px/s in preview resolution" />
+    </label>
+
+    <!-- Padding -->
+    <label>Padding
+      <input type="number" id="inp-padding" value="20" min="0" max="200" step="1" title="Inset from inner screen border (px at preview resolution)" />
+    </label>
+
+    <!-- Font size -->
+    <label>Font&nbsp;px
+      <input type="number" id="inp-fontsize" value="48" min="8" max="400" step="1" title="Font size in preview pixels" />
+    </label>
+
+    <!-- Trail gap -->
+    <label>Trail&nbsp;gap
+      <input type="number" id="inp-trailgap" value="42" min="1" max="400" step="1" title="Distance between trail echoes (px)" />
+    </label>
+
+    <div class="sep"></div>
+
+    <!-- FPS -->
+    <label>FPS
+      <select id="sel-fps">
+        <option value="30">30</option>
+        <option value="60" selected>60</option>
+      </select>
+    </label>
+
+    <!-- Export resolution -->
+    <label>Export res
+      <select id="sel-res">
+        <option value="preview">Preview</option>
+        <option value="1280x720">1280×720</option>
+        <option value="1920x1080" selected>1920×1080</option>
+        <option value="3840x2160">3840×2160</option>
+      </select>
+    </label>
+
+    <!-- Export duration -->
+    <label>Duration&nbsp;s
+      <input type="number" id="inp-duration" value="30" min="1" max="3600" step="1" title="Export duration in seconds" />
+    </label>
+
+    <!-- Export format -->
+    <label>Format
+      <select id="sel-format">
+        <option value="webm">WebM (video)</option>
+        <option value="zip">PNG sequence (zip)</option>
+      </select>
+    </label>
+
+    <div class="sep"></div>
+
+    <!-- Scanlines toggle -->
+    <label title="Toggle scanline overlay">
+      <input type="checkbox" id="chk-scanlines" checked /> Scanlines
+    </label>
+
+    <!-- Vignette toggle -->
+    <label title="Toggle vignette overlay">
+      <input type="checkbox" id="chk-vignette" checked /> Vignette
+    </label>
+
+    <!-- Debug toggle -->
+    <label title="Toggle debug overlay">
+      <input type="checkbox" id="chk-debug" /> Debug
+    </label>
+
+    <div class="sep"></div>
+
+    <!-- Action buttons -->
+    <button id="btn-startstop" class="primary">▶ Start</button>
+    <button id="btn-reset">↺ Reset</button>
+    <button id="btn-export" class="primary">⬇ Export</button>
+    <button id="btn-cancel-export" class="danger" style="display:none">✕ Cancel</button>
+
+  </div>
+
+  <!-- JSZip for PNG-sequence export (loaded lazily) -->
+  <script>
+    // We defer loading JSZip until actually needed (see app.js exportFramesZip)
+    window._JSZIP_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

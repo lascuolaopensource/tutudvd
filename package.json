@@ -1,0 +1,13 @@
+{
+  "name": "tutudvd",
+  "private": true,
+  "version": "1.0.0",
+  "description": "festa di tutu projection",
+  "scripts": {
+    "dev": "live-server --watch=. --port=8080 --open=index.html",
+    "start": "npm run dev"
+  },
+  "devDependencies": {
+    "live-server": "^1.2.2"
+  }
+}
