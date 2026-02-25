@@ -3,6 +3,7 @@
  *
  * Key exported / notable functions (described in JSDoc below):
  *   loadTextsFromFile(file)
+ *   loadTextsFromDefaultCsv(seed)
  *   parseCSV(text)
  *   parseJSON(text)
  *   stepSimulation(dt)
@@ -22,6 +23,18 @@ const TARGET_SCANLINE_COUNT = 300;
 
 /** Video bitrate for WebM export (bits per second). */
 const VIDEO_BITRATE = 8_000_000;
+const TOP_TAGLINE = 'NASONE TI CHIAMA PI NOMI';
+const BOTTOM_TAGLINE = 'XYZ 🌣 VIAGGIO INTORNO AL SOLE';
+const MOVING_TEXT_MIN_SIZE = 8;
+const MOVING_TEXT_MAX_WIDTH_RATIO = 0.92;
+const TRAIL_LIFE_FRAMES = 140;
+const TRAIL_MAX_ALPHA = 0.35;
+const DEFAULT_TRAIL_GAP = 42;
+const TRAIL_SAMPLE_DISTANCE_RATIO = 0.75;
+const TRAIL_ECHO_DELAY_FRAMES = 14;
+const DEFAULT_NAMES_CSV = 'soprannomi.csv';
+const DEFAULT_PICK_MIN = 20;
+const DEFAULT_PICK_MAX = 30;
 
 const DEFAULT_TEXTS = [
   'tutudvd',
@@ -135,6 +148,58 @@ function loadTextsFromFile(file) {
   });
 }
 
+/**
+ * Pick a subset of entries that is random but spread across the whole source list.
+ * @param {string[]} items
+ * @param {() => number} rng
+ * @param {number} minCount
+ * @param {number} maxCount
+ * @returns {string[]}
+ */
+function pickDistributedSubset(items, rng, minCount, maxCount) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const upper = Math.max(1, Math.min(items.length, maxCount));
+  const lower = Math.max(1, Math.min(upper, minCount));
+  const count = lower + Math.floor(rng() * (upper - lower + 1));
+  const bucketSize = items.length / count;
+  const picks = [];
+
+  for (let i = 0; i < count; i++) {
+    const start = Math.floor(i * bucketSize);
+    const end = Math.max(start, Math.floor((i + 1) * bucketSize) - 1);
+    const idx = start + Math.floor(rng() * (end - start + 1));
+    picks.push(items[idx]);
+  }
+
+  // Shuffle picked entries for better perceived randomness.
+  for (let i = picks.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [picks[i], picks[j]] = [picks[j], picks[i]];
+  }
+
+  return picks;
+}
+
+/**
+ * Load names from the bundled CSV and choose a distributed random subset.
+ * @param {string|number} seed
+ * @returns {Promise<void>}
+ */
+async function loadTextsFromDefaultCsv(seed) {
+  const response = await fetch(DEFAULT_NAMES_CSV, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`Failed to load ${DEFAULT_NAMES_CSV} (${response.status})`);
+  }
+  const raw = await response.text();
+  const allNames = parseCSV(raw);
+  if (allNames.length === 0) {
+    throw new Error(`${DEFAULT_NAMES_CSV} is empty`);
+  }
+  const rng = createRng(seed || 'tutudvd');
+  state.texts = pickDistributedSubset(allNames, rng, DEFAULT_PICK_MIN, DEFAULT_PICK_MAX);
+  state.textIndex = 0;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    4.  SIMULATION STATE
    ═══════════════════════════════════════════════════════════════════════ */
@@ -168,6 +233,10 @@ const state = {
 
   // export cancellation
   _exportCancelled: false,
+
+  // fading trail history
+  trailPoints: [],
+  trailEchoDelay: 0,
 };
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -182,6 +251,7 @@ const inpSeed     = document.getElementById('inp-seed');
 const inpSpeed    = document.getElementById('inp-speed');
 const inpPadding  = document.getElementById('inp-padding');
 const inpFontSize = document.getElementById('inp-fontsize');
+const inpTrailGap = document.getElementById('inp-trailgap');
 const selFps      = document.getElementById('sel-fps');
 const selRes      = document.getElementById('sel-res');
 const inpDuration = document.getElementById('inp-duration');
@@ -234,6 +304,7 @@ function getSettings() {
     speed:    Math.max(10, parseFloat(inpSpeed.value) || 180),
     padding:  Math.max(0, parseFloat(inpPadding.value) || 20),
     fontSize: Math.max(8, parseFloat(inpFontSize.value) || 48),
+    trailGap: Math.max(1, parseFloat(inpTrailGap.value) || DEFAULT_TRAIL_GAP),
     fps:      parseInt(selFps.value, 10) || 60,
     duration: Math.max(1, parseFloat(inpDuration.value) || 30),
     exportRes: selRes.value,
@@ -258,8 +329,8 @@ function getScreenRect(cw, ch, padding) {
  * Measure text bounding box in the current canvas context.
  * Returns { w, h } where h is approximated from the font metrics.
  */
-function measureText(ctx, text, fontSize) {
-  ctx.font = `bold ${fontSize}px 'Courier New', Courier, monospace`;
+function measureText(ctx, text, fontSize, fontWeight = 700) {
+  ctx.font = `${fontWeight} ${fontSize}px 'Savate', 'Courier New', Courier, sans-serif`;
   const m = ctx.measureText(text);
   const w = m.width;
   // Use actual bounding box if available, otherwise approximate
@@ -269,11 +340,26 @@ function measureText(ctx, text, fontSize) {
   return { w, h };
 }
 
+/**
+ * Fit moving text width inside the usable screen rect by reducing size if needed.
+ * Returns the effective font size plus measured width/height.
+ */
+function getMovingTextMetrics(ctx2d, text, requestedFontSize, sr) {
+  const maxWidth = Math.max(1, sr.w * MOVING_TEXT_MAX_WIDTH_RATIO);
+  let fontSize = Math.max(MOVING_TEXT_MIN_SIZE, requestedFontSize);
+  let metrics = measureText(ctx2d, text, fontSize, 700);
+  while (fontSize > MOVING_TEXT_MIN_SIZE && metrics.w > maxWidth) {
+    fontSize--;
+    metrics = measureText(ctx2d, text, fontSize, 700);
+  }
+  return { fontSize, w: metrics.w, h: metrics.h };
+}
+
 /** Clamp position so the text stays inside the screen rect. */
 function clampPosition() {
   const s = getSettings();
   const sr = getScreenRect(canvas.width, canvas.height, s.padding);
-  const { w: tw, h: th } = measureText(ctx, state.texts[state.textIndex], s.fontSize);
+  const { w: tw, h: th } = getMovingTextMetrics(ctx, state.texts[state.textIndex], s.fontSize, sr);
   const hw = tw / 2, hh = th / 2;
 
   const minX = sr.x + hw, maxX = sr.x + sr.w - hw;
@@ -297,11 +383,15 @@ function resetSimulation() {
   state.rng = createRng(s.seed);
 
   const sr = getScreenRect(canvas.width, canvas.height, s.padding);
-  const { w: tw, h: th } = measureText(ctx, state.texts[0], s.fontSize);
+  const { w: tw, h: th } = getMovingTextMetrics(ctx, state.texts[0], s.fontSize, sr);
+  const minX = sr.x + tw / 2;
+  const maxX = sr.x + sr.w - tw / 2;
+  const minY = sr.y + th / 2;
+  const maxY = sr.y + sr.h - th / 2;
 
   // Start at a random position inside the screen rect
-  state.x = sr.x + tw / 2 + state.rng() * (sr.w - tw);
-  state.y = sr.y + th / 2 + state.rng() * (sr.h - th);
+  state.x = maxX > minX ? minX + state.rng() * (maxX - minX) : sr.x + sr.w / 2;
+  state.y = maxY > minY ? minY + state.rng() * (maxY - minY) : sr.y + sr.h / 2;
 
   // Random initial direction (diagonal-ish, avoid axis-aligned)
   const angle = (0.3 + state.rng() * 0.9) * Math.PI / 2;  // 17°–69° ish
@@ -315,6 +405,8 @@ function resetSimulation() {
   state.bounces  = 0;
   state.textIndex = 0;
   state._lastTs  = null;
+  state.trailPoints = [];
+  state.trailEchoDelay = 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -330,9 +422,10 @@ const MAX_SUBSTEPS = 8;
  * @param {object} ctx2d  Canvas 2D context (used only for text measurement).
  * @param {number} cw  Canvas width.
  * @param {number} ch  Canvas height.
+ * @param {object} [settings] Optional settings override (used by export).
  */
-function stepSimulation(dt, ctx2d, cw, ch) {
-  const s = getSettings();
+function stepSimulation(dt, ctx2d, cw, ch, settings) {
+  const s = settings || getSettings();
   const sr = getScreenRect(cw, ch, s.padding);
   const maxTravel = Math.max(Math.abs(state.vx * dt), Math.abs(state.vy * dt));
   const substeps = Math.min(MAX_SUBSTEPS, Math.ceil(maxTravel / (Math.min(sr.w, sr.h) * 0.3)) + 1);
@@ -357,7 +450,7 @@ function stepSimulation(dt, ctx2d, cw, ch) {
  * @param {object} sr  Screen rect { x, y, w, h }.
  */
 function handleCollisions(ctx2d, cw, ch, s, sr) {
-  const { w: tw, h: th } = measureText(ctx2d, state.texts[state.textIndex], s.fontSize);
+  const { w: tw, h: th } = getMovingTextMetrics(ctx2d, state.texts[state.textIndex], s.fontSize, sr);
   const hw = tw / 2, hh = th / 2;
 
   const minX = sr.x + hw, maxX = sr.x + sr.w - hw;
@@ -412,7 +505,7 @@ function drawFrame(ctx2d, cw, ch, settings) {
   ctx2d.fill();
 
   // Inner screen
-  ctx2d.fillStyle = '#050508';
+  ctx2d.fillStyle = '#fff';
   ctx2d.beginPath();
   const ir = bezel * 0.8;
   roundRect(ctx2d, bezel * 0.5, bezel * 0.5, cw - bezel, ch - bezel, ir);
@@ -420,25 +513,24 @@ function drawFrame(ctx2d, cw, ch, settings) {
 
   // ── Moving text ──────────────────────────────────────────────────────
   const text = state.texts[state.textIndex];
-  const fontSize = s.fontSize;
-  ctx2d.font = `bold ${fontSize}px 'Courier New', Courier, monospace`;
+  const movingMetrics = getMovingTextMetrics(ctx2d, text, s.fontSize, sr);
+  const movingFontSize = movingMetrics.fontSize;
+  ctx2d.font = `700 ${movingFontSize}px 'Savate', 'Courier New', Courier, sans-serif`;
   ctx2d.textAlign = 'center';
   ctx2d.textBaseline = 'middle';
 
   // Colour from hue
   const colour = `hsl(${state.hue}, 90%, 60%)`;
-  const shadowColour = `hsl(${state.hue}, 100%, 40%)`;
+  ageTrailPoints();
+  recordTrailPoint(text, movingFontSize, s);
+  drawMotionTrails(ctx2d);
 
-  ctx2d.shadowBlur = fontSize * 0.4;
-  ctx2d.shadowColor = shadowColour;
+  ctx2d.shadowBlur = 0;
   ctx2d.fillStyle = colour;
   ctx2d.fillText(text, state.x, state.y);
 
-  // Optional text stroke for legibility
-  ctx2d.shadowBlur = 0;
-  ctx2d.strokeStyle = 'rgba(0,0,0,0.4)';
-  ctx2d.lineWidth = Math.max(1, fontSize * 0.025);
-  ctx2d.strokeText(text, state.x, state.y);
+  // ── Static top/bottom taglines ───────────────────────────────────────
+  drawTaglines(ctx2d, sr, s.fontSize);
 
   // ── Scanlines overlay ────────────────────────────────────────────────
   if (s.scanlines) {
@@ -449,6 +541,97 @@ function drawFrame(ctx2d, cw, ch, settings) {
   if (s.vignette) {
     drawVignette(ctx2d, cw, ch);
   }
+}
+
+/** Increase trail sample age and discard samples that are fully faded out. */
+function ageTrailPoints() {
+  for (const point of state.trailPoints) point.age++;
+  state.trailPoints = state.trailPoints.filter(point => point.age <= TRAIL_LIFE_FRAMES);
+  if (state.trailEchoDelay > 0) state.trailEchoDelay--;
+}
+
+/** Record the current logo position as a trail sample. */
+function recordTrailPoint(text, fontSize, settings) {
+  const last = state.trailPoints[state.trailPoints.length - 1];
+  const minGap = settings && Number.isFinite(settings.trailGap)
+    ? settings.trailGap
+    : DEFAULT_TRAIL_GAP;
+  const sampleDistance = Math.max(minGap, fontSize * TRAIL_SAMPLE_DISTANCE_RATIO);
+  if (state.trailEchoDelay > 0) return;
+  if (last && last.text === text && Math.hypot(state.x - last.x, state.y - last.y) < sampleDistance) {
+    return;
+  }
+  state.trailPoints.push({
+    x: state.x,
+    y: state.y,
+    text,
+    fontSize,
+    hue: state.hue,
+    age: 0,
+  });
+  state.trailEchoDelay = TRAIL_ECHO_DELAY_FRAMES;
+}
+
+/** Draw fading trajectory trails from stored historical samples. */
+function drawMotionTrails(ctx2d) {
+  if (state.trailPoints.length === 0) return;
+
+  ctx2d.save();
+  ctx2d.shadowBlur = 0;
+  ctx2d.textAlign = 'center';
+  ctx2d.textBaseline = 'middle';
+
+  for (const point of state.trailPoints) {
+    if (point.age <= 0) continue; // current position is drawn as the main text
+    const t = 1 - (point.age / TRAIL_LIFE_FRAMES);
+    if (t <= 0) continue;
+    const alpha = TRAIL_MAX_ALPHA * t * t;
+    if (alpha <= 0.005) continue;
+    ctx2d.font = `700 ${point.fontSize}px 'Savate', 'Courier New', Courier, sans-serif`;
+    ctx2d.fillStyle = `hsla(${point.hue}, 90%, 45%, ${alpha.toFixed(3)})`;
+    ctx2d.fillText(point.text, point.x, point.y);
+  }
+  ctx2d.restore();
+}
+
+/** Draw fixed taglines at the top and bottom of the inner screen area. */
+function drawTaglines(ctx2d, screenRect, baseFontSize) {
+  const topText = TOP_TAGLINE.toUpperCase();
+  const bottomText = BOTTOM_TAGLINE.toUpperCase();
+  const maxWidth = screenRect.w * 0.94;
+  const minSize = 10;
+  let size = Math.max(16, Math.round(baseFontSize * 0.34));
+
+  // Fit both strings on one line using the same font size.
+  while (size > minSize) {
+    ctx2d.font = `500 ${size}px 'Savate', 'Courier New', Courier, sans-serif`;
+    if (
+      ctx2d.measureText(topText).width <= maxWidth &&
+      ctx2d.measureText(bottomText).width <= maxWidth
+    ) {
+      break;
+    }
+    size--;
+  }
+
+  const margin = Math.max(8, Math.round(size * 0.4));
+
+  ctx2d.save();
+  ctx2d.font = `500 ${size}px 'Savate', 'Courier New', Courier, sans-serif`;
+  ctx2d.fillStyle = '#000';
+  ctx2d.shadowBlur = 0;
+  ctx2d.textAlign = 'center';
+
+  ctx2d.textBaseline = 'top';
+  ctx2d.fillText(topText, screenRect.x + screenRect.w / 2, screenRect.y + margin);
+
+  ctx2d.textBaseline = 'bottom';
+  ctx2d.fillText(
+    bottomText,
+    screenRect.x + screenRect.w / 2,
+    screenRect.y + screenRect.h - margin
+  );
+  ctx2d.restore();
 }
 
 /** Draw horizontal scanlines over the full canvas. */
@@ -506,7 +689,7 @@ function tick(ts) {
   state._lastTs = ts;
 
   const s = getSettings();
-  stepSimulation(rawDt, ctx, canvas.width, canvas.height);
+  stepSimulation(rawDt, ctx, canvas.width, canvas.height, s);
   drawFrame(ctx, canvas.width, canvas.height, s);
   updateDebug();
 
@@ -645,14 +828,21 @@ async function exportVideoWebM() {
   recorder.start();
 
   // Snapshot of current simulation state (so we don't mutate live state)
-  const savedState = { ...state };
+  const savedState = {
+    ...state,
+    trailPoints: state.trailPoints.map(point => ({ ...point })),
+  };
 
   // Re-initialise simulation deterministically for export
   state.rng = createRng(s.seed);
   const sr0 = getScreenRect(expW, expH, s.padding);
-  const { w: tw0, h: th0 } = measureText(expCtx, state.texts[0], expFontSize);
-  state.x  = sr0.x + tw0 / 2 + state.rng() * (sr0.w - tw0);
-  state.y  = sr0.y + th0 / 2 + state.rng() * (sr0.h - th0);
+  const { w: tw0, h: th0 } = getMovingTextMetrics(expCtx, state.texts[0], expFontSize, sr0);
+  const minX0 = sr0.x + tw0 / 2;
+  const maxX0 = sr0.x + sr0.w - tw0 / 2;
+  const minY0 = sr0.y + th0 / 2;
+  const maxY0 = sr0.y + sr0.h - th0 / 2;
+  state.x  = maxX0 > minX0 ? minX0 + state.rng() * (maxX0 - minX0) : sr0.x + sr0.w / 2;
+  state.y  = maxY0 > minY0 ? minY0 + state.rng() * (maxY0 - minY0) : sr0.y + sr0.h / 2;
   const angle0 = (0.3 + state.rng() * 0.9) * Math.PI / 2;
   const q0 = Math.floor(state.rng() * 4);
   state.vx = ((q0 & 1) ? 1 : -1) * Math.cos(angle0) * expSpeed;
@@ -660,9 +850,11 @@ async function exportVideoWebM() {
   state.hue = Math.floor(state.rng() * 360);
   state.bounces = 0;
   state.textIndex = 0;
+  state.trailPoints = [];
+  state.trailEchoDelay = 0;
 
   // Override font size and speed in settings for export frames
-  const expSettings = { ...s, fontSize: expFontSize, speed: expSpeed };
+  const expSettings = { ...s, fontSize: expFontSize, speed: expSpeed, trailGap: s.trailGap * scaleX };
 
   state._exportCancelled = false;
   btnCancelExp.style.display = '';
@@ -673,7 +865,7 @@ async function exportVideoWebM() {
       if (state._exportCancelled) break;
 
       // Advance simulation
-      stepSimulation(dt, expCtx, expW, expH);
+      stepSimulation(dt, expCtx, expW, expH, expSettings);
       // Draw frame
       drawFrame(expCtx, expW, expH, expSettings);
 
@@ -687,6 +879,7 @@ async function exportVideoWebM() {
   } finally {
     // Restore live simulation state
     Object.assign(state, savedState);
+    state.trailPoints = savedState.trailPoints.map(point => ({ ...point }));
   }
 
   recorder.stop();
@@ -756,12 +949,19 @@ async function exportFramesZip() {
   const expCtx = expCanvas.getContext('2d');
 
   // Snapshot + deterministic re-init (same logic as exportVideoWebM)
-  const savedState = { ...state };
+  const savedState = {
+    ...state,
+    trailPoints: state.trailPoints.map(point => ({ ...point })),
+  };
   state.rng = createRng(s.seed);
   const sr0 = getScreenRect(expW, expH, s.padding);
-  const { w: tw0, h: th0 } = measureText(expCtx, state.texts[0], expFontSize);
-  state.x  = sr0.x + tw0 / 2 + state.rng() * (sr0.w - tw0);
-  state.y  = sr0.y + th0 / 2 + state.rng() * (sr0.h - th0);
+  const { w: tw0, h: th0 } = getMovingTextMetrics(expCtx, state.texts[0], expFontSize, sr0);
+  const minX0 = sr0.x + tw0 / 2;
+  const maxX0 = sr0.x + sr0.w - tw0 / 2;
+  const minY0 = sr0.y + th0 / 2;
+  const maxY0 = sr0.y + sr0.h - th0 / 2;
+  state.x  = maxX0 > minX0 ? minX0 + state.rng() * (maxX0 - minX0) : sr0.x + sr0.w / 2;
+  state.y  = maxY0 > minY0 ? minY0 + state.rng() * (maxY0 - minY0) : sr0.y + sr0.h / 2;
   const angle0 = (0.3 + state.rng() * 0.9) * Math.PI / 2;
   const q0 = Math.floor(state.rng() * 4);
   state.vx = ((q0 & 1) ? 1 : -1) * Math.cos(angle0) * expSpeed;
@@ -769,8 +969,10 @@ async function exportFramesZip() {
   state.hue = Math.floor(state.rng() * 360);
   state.bounces = 0;
   state.textIndex = 0;
+  state.trailPoints = [];
+  state.trailEchoDelay = 0;
 
-  const expSettings = { ...s, fontSize: expFontSize, speed: expSpeed };
+  const expSettings = { ...s, fontSize: expFontSize, speed: expSpeed, trailGap: s.trailGap * scaleX };
   const zip = new JSZip();
   const folder = zip.folder(exportFilename(s.seed, expW, expH));
 
@@ -782,7 +984,7 @@ async function exportFramesZip() {
     for (let f = 0; f < totalFrames; f++) {
       if (state._exportCancelled) break;
 
-      stepSimulation(dt, expCtx, expW, expH);
+      stepSimulation(dt, expCtx, expW, expH, expSettings);
       drawFrame(expCtx, expW, expH, expSettings);
 
       // Add PNG to zip
@@ -798,6 +1000,7 @@ async function exportFramesZip() {
     }
   } finally {
     Object.assign(state, savedState);
+    state.trailPoints = savedState.trailPoints.map(point => ({ ...point }));
   }
 
   setExportProgress(totalFrames, totalFrames);
@@ -894,6 +1097,18 @@ window.addEventListener('resize', () => {
    17.  BOOT
    ═══════════════════════════════════════════════════════════════════════ */
 
-resizeCanvas();
-resetSimulation();
-drawFrame(ctx, canvas.width, canvas.height);
+async function boot() {
+  resizeCanvas();
+  try {
+    await loadTextsFromDefaultCsv(inpSeed.value || 'tutudvd');
+    console.info(`Loaded ${state.texts.length} names from ${DEFAULT_NAMES_CSV}`);
+  } catch (err) {
+    console.warn(`Could not load ${DEFAULT_NAMES_CSV}, using built-in defaults:`, err);
+    state.texts = [...DEFAULT_TEXTS];
+    state.textIndex = 0;
+  }
+  resetSimulation();
+  drawFrame(ctx, canvas.width, canvas.height);
+}
+
+boot();
